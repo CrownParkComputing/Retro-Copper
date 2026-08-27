@@ -1,0 +1,23 @@
+[package]
+name = "copperline_ffi"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "C ABI bridge: the Retro-Amiga workbench GUI over the headless Copperline core"
+publish = false
+
+# Standalone on purpose, like copperline-web: building the bridge never
+# touches the core submodule's lockfile.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The headless core only - no winit/pixels/cpal. Same surface the wasm
+# frontend builds against, which is the whole reason this bridge is small.
+copperline = { path = "../../copperline", default-features = false }
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
