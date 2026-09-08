@@ -154,11 +154,12 @@ impl ClEmu {
         }
         let visible_start_vpos = self.emu.bus().frame_visible_start_vpos();
         // A frame identical to the previous render needs no pipeline at all.
-        if bitplane::render_reusing_previous(
+        let reuse_result = bitplane::render_reusing_previous(
             self.emu.bus_mut(),
             &mut self.fb,
             &mut self.repeated_frame_detector,
-        ) {
+        );
+        if reuse_result == bitplane::ReuseRender::Reused {
             self.last_rendered_frame = Some(emulated_frame);
             return;
         }
@@ -181,7 +182,7 @@ impl ClEmu {
         let canvas_width = FB_WIDTH * canvas_scale;
         let lace = base.bplcon0 & 0x0004 != 0;
         let double_rows = !geometry.programmable;
-        let woven_rows = if lace || double_rows { field_rows * 2 } else { field_rows };
+        let woven_rows = if lace || double_rows { field_rows.rows * 2 } else { field_rows.rows };
         let tv_aperture_rows = self
             .presentation_latch
             .resolve_tv_aperture(present_common::standard_tv_aperture_frame(
@@ -193,7 +194,7 @@ impl ClEmu {
             (self.present_rows, self.present_width) =
                 self.deinterlacer.present_field_region_into_elapsed(
                     &self.fb,
-                    field_rows,
+                    field_rows.rows,
                     canvas_width,
                     lace,
                     base.long_field,
@@ -209,7 +210,7 @@ impl ClEmu {
         } else {
             (self.present_rows, self.present_width) = self.deinterlacer.present_field_into_elapsed(
                 &self.fb,
-                field_rows,
+                field_rows.rows,
                 canvas_width,
                 lace,
                 base.long_field,
