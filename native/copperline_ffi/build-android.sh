@@ -62,14 +62,22 @@ target_dir() {
 BUILT="$HERE/target/$(target_dir)/release/libuae4arm.so"
 [ -f "$BUILT" ] || { echo "error: no library at $BUILT" >&2; exit 1; }
 
-# The count is checked rather than assumed: a library that loads but is
-# missing an export fails at the first dlsym, deep inside the app, with a
-# message that names one function and explains nothing.
-exports=$(llvm-nm -D --defined-only "$BUILT" 2>/dev/null | grep -c "uae4arm_host_" || true)
-[ "$exports" -eq 25 ] || {
-    echo "error: $exports of 25 uae4arm_host_ functions exported" >&2
-    exit 1
-}
+# Every function the app looks up must really be there. A library that loads
+# but is missing one fails at the first dlsym, deep inside the app, with a
+# message that names a function and explains nothing. The list is what Dart
+# asks for; extras (uae4arm_host_core_name) are welcome and not counted.
+required="copy_framebuffer framebuffer_serial framebuffer_size get_floppy_count
+insert_floppy logfile_path mouse_button mouse_move pad_attach pad_button
+pad_direction pad_port pad_release_all quit run save_session send_key
+set_external_controller_mode set_framebuffer_output set_logfile_enabled
+set_onscreen_controller set_pause set_session swap_pad_port texture_posted"
+have=$(llvm-nm -D --defined-only "$BUILT" 2>/dev/null | grep -o "uae4arm_host_[a-z_]*" | sort -u)
+missing=""
+for name in $required; do
+    printf '%s\n' "$have" | grep -qx "uae4arm_host_$name" || missing="$missing $name"
+done
+[ -z "$missing" ] || { echo "error: not exported:$missing" >&2; exit 1; }
+exports=$(printf '%s\n' "$have" | wc -l)
 
 mkdir -p "$JNILIBS"
 cp "$BUILT" "$JNILIBS/libuae4arm.so"
