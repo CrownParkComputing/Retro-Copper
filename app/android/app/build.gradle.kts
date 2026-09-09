@@ -134,10 +134,12 @@ android {
         versionCode = androidVersionCodeBase + flutter.versionCode
         versionName = flutter.versionName
 
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-                arguments += "-DANDROID_STL=c++_shared"
+        if (!project.hasProperty("copperlineCore")) {
+            externalNativeBuild {
+                cmake {
+                    cppFlags += "-std=c++17"
+                    arguments += "-DANDROID_STL=c++_shared"
+                }
             }
         }
 
@@ -164,11 +166,25 @@ android {
         }
     }
 
-    externalNativeBuild {
-        cmake {
-            // Repo root: app/android/app -> app/android -> app -> repo root.
-            path = file("../../../CMakeLists.txt")
-            version = "3.22.1"
+    // Which emulator core the app runs.
+    //
+    // By default Gradle compiles the vendored Amiberry tree through CMake,
+    // which produces libuae4arm.so. Pass -PcopperlineCore=true and it does
+    // not: the build then packages the libuae4arm.so already in jniLibs,
+    // which native/copperline_ffi/build-android.sh puts there from the Rust
+    // bridge over Copperline. Both export the same twenty-five
+    // uae4arm_host_* functions, so the app cannot tell them apart, and a
+    // game can be tried under either core without touching a line of Dart.
+    //
+    // The two cannot both build: they produce a library of the same name and
+    // the packager refuses the collision.
+    if (!project.hasProperty("copperlineCore")) {
+        externalNativeBuild {
+            cmake {
+                // Repo root: app/android/app -> app/android -> app -> repo root.
+                path = file("../../../CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
     }
 
