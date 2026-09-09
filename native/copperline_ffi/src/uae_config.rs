@@ -17,8 +17,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use copperline::config::{
-    machine_profile_defaults, parse_machine_model, parse_video_standard, Config,
+    machine_profile_defaults, parse_machine_model, parse_video_standard, Config, DriveImage,
 };
+use copperline::filesys::MountSpec;
 
 /// One `key=value` file, parsed. Later lines win, which is how UAE itself
 /// treats a repeated key.
@@ -238,12 +239,18 @@ pub fn session_from(file: &UaeFile) -> anyhow::Result<Session> {
     if let Some(units) = file.int("bogomem_size") {
         config.slow_ram_bytes = bogo_bytes(units);
     }
-    // Fast RAM: the Zorro III pool is the larger of the two on the machines
-    // this app configures, so whichever is set wins rather than being summed
-    // across buses Copperline models separately.
-    let fast = file.int("fastmem_size").unwrap_or(0).max(file.int("z3mem_size").unwrap_or(0));
-    if fast > 0 {
-        config.fast_ram_bytes = megabytes(fast);
+    // The two fast-RAM keys are different buses and must not be merged: a
+    // Zorro II board autoconfigures only at 64K to 8M, so folding a 256MB
+    // Zorro III pool into it fails to build a machine at all.
+    if let Some(mb) = file.int("fastmem_size") {
+        if mb > 0 {
+            config.fast_ram_bytes = megabytes(mb.min(8));
+        }
+    }
+    if let Some(mb) = file.int("z3mem_size") {
+        if mb > 0 {
+            config.z3_ram_bytes = megabytes(mb);
+        }
     }
 
     let drives = file.int("nr_floppies").unwrap_or(1).clamp(0, 4) as usize;
@@ -258,16 +265,67 @@ pub fn session_from(file: &UaeFile) -> anyhow::Result<Session> {
         }
     }
 
-    let dirs: Vec<DirMount> = file
-        .filesystems
+    // A mount whose path has gone is dropped rather than passed on. The core
+    // refuses to build a machine around a missing directory, and on a phone
+    // that is a routine event: iOS moves the container on every install, and
+    // a card can be pulled. Failing to start at all would turn a missing
+    // folder into an app that never opens, so it is reported instead.
+    let mut dirs: Vec<DirMount> = Vec::new();
+    for spec in &file.filesystems {
+        let Some(mount) = parse_filesystem2(spec) else {
+            unmapped.0.push(format!("filesystem2={spec} could not be read"));
+            continue;
+        };
+        if mount.path.is_dir() {
+            dirs.push(mount);
+        } else {
+            unmapped.0.push(format!("{} is not on this device", mount.path.display()));
+        }
+    }
+    let mut images: Vec<ImageMount> = Vec::new();
+    for spec in &file.hardfiles {
+        let Some(image) = parse_hardfile2(spec) else {
+            unmapped.0.push(format!("hardfile2={spec} could not be read"));
+            continue;
+        };
+        if image.path.is_file() {
+            images.push(image);
+        } else {
+            unmapped.0.push(format!("{} is not on this device", image.path.display()));
+        }
+    }
+
+    // Directory mounts go to the host filesystem handler: the guest sees a
+    // live volume backed by the folder, which is what an AGS or AmigaVision
+    // tree on a card actually is. Images go on the IDE controller Copperline
+    // models in hardware; the UAE "uae" controller has no counterpart, and
+    // the first free IDE slot is where its importer puts one too.
+    config.filesys = dirs
         .iter()
-        .filter_map(|spec| parse_filesystem2(spec))
+        .map(|dir| MountSpec {
+            path: dir.path.clone(),
+            volume: dir.volume.clone(),
+            boot_pri: dir.boot_pri,
+            readonly: dir.readonly,
+        })
         .collect();
-    let images: Vec<ImageMount> = file
-        .hardfiles
-        .iter()
-        .filter_map(|spec| parse_hardfile2(spec))
-        .collect();
+
+    let mut slots: Vec<&mut Option<DriveImage>> =
+        vec![&mut config.ide.master, &mut config.ide.slave];
+    for (index, image) in images.iter().enumerate() {
+        let Some(slot) = slots.get_mut(index) else {
+            unmapped.0.push(format!(
+                "hardfile2 {} has no controller slot left (IDE holds two)",
+                image.path.display()
+            ));
+            continue;
+        };
+        **slot = Some(DriveImage {
+            path: image.path.clone(),
+            boot_pri: image.boot_pri,
+            ..DriveImage::default()
+        });
+    }
 
     for key in ["cachesize", "cpu_speed", "gfxcard_size", "whdload_filename"] {
         if let Some(value) = file.get(key) {
@@ -303,30 +361,106 @@ hardfile2=rw,DH2:"/media/Amiga/work.hdf",32,1,2,512,0,,ide0
 ntsc=false
 "#;
 
+    /// Writes the collection out with paths that really exist under `root`,
+    /// because a mount that is not there is deliberately dropped.
+    fn collection_on_disk(root: &Path) -> String {
+        std::fs::create_dir_all(root.join("AGS")).unwrap();
+        std::fs::create_dir_all(root.join("Games, extra")).unwrap();
+        std::fs::write(root.join("work.hdf"), [0u8; 512]).unwrap();
+        COLLECTION
+            .replace("/media/Amiga/AGS", root.join("AGS").to_str().unwrap())
+            .replace(
+                "/media/Amiga/Games, extra",
+                root.join("Games, extra").to_str().unwrap(),
+            )
+            .replace("/media/Amiga/work.hdf", root.join("work.hdf").to_str().unwrap())
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("copperline_ffi_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn reads_a_collection() {
-        let file = UaeFile::parse(COLLECTION);
+        let root = scratch("collection");
+        let file = UaeFile::parse(&collection_on_disk(&root));
         let session = session_from(&file).expect("maps");
 
         assert_eq!(session.config.chip_ram_bytes, 2 * 1024 * 1024);
-        assert_eq!(session.config.fast_ram_bytes, 256 * 1024 * 1024);
+        // Zorro II and Zorro III are separate pools, not one number.
+        assert_eq!(session.config.fast_ram_bytes, 8 * 1024 * 1024);
+        assert_eq!(session.config.z3_ram_bytes, 256 * 1024 * 1024);
         assert_eq!(session.config.rom_path, PathBuf::from("/roms/kick31.rom"));
 
         assert_eq!(session.dirs.len(), 2, "both directory mounts survive");
         assert_eq!(session.dirs[0].volume, "AGS");
-        assert_eq!(session.dirs[0].path, PathBuf::from("/media/Amiga/AGS"));
+        assert_eq!(session.dirs[0].path, root.join("AGS"));
         assert!(!session.dirs[0].readonly);
         // A quoted path containing a comma must not be split on it.
-        assert_eq!(
-            session.dirs[1].path,
-            PathBuf::from("/media/Amiga/Games, extra")
-        );
+        assert_eq!(session.dirs[1].path, root.join("Games, extra"));
         assert!(session.dirs[1].readonly);
         assert_eq!(session.dirs[1].boot_pri, -1);
 
         assert_eq!(session.images.len(), 1);
-        assert_eq!(session.images[0].path, PathBuf::from("/media/Amiga/work.hdf"));
+        assert_eq!(session.images[0].path, root.join("work.hdf"));
         assert_eq!(session.images[0].controller, "ide0");
+
+        // The point of all this: the mounts reach the machine, not just the
+        // parse result.
+        assert_eq!(session.config.filesys.len(), 2);
+        assert_eq!(session.config.filesys[0].volume, "AGS");
+        assert_eq!(session.config.filesys[0].path, root.join("AGS"));
+        assert!(session.config.filesys[1].readonly);
+        let master = session.config.ide.master.as_ref().expect("hardfile on IDE");
+        assert_eq!(master.path, root.join("work.hdf"));
+        assert!(session.config.ide.slave.is_none());
+    }
+
+    #[test]
+    fn a_third_image_is_reported_rather_than_dropped() {
+        let root = scratch("three_images");
+        let mut text = String::from("chipset=aga\ncpu_model=68020\n");
+        for unit in 0..3 {
+            let image = root.join(format!("disk{unit}.hdf"));
+            std::fs::write(&image, [0u8; 512]).unwrap();
+            text.push_str(&format!(
+                "hardfile2=rw,DH{unit}:\"{}\",32,1,2,512,0,,ide0\n",
+                image.display()
+            ));
+        }
+        let session = session_from(&UaeFile::parse(&text)).expect("maps");
+        assert!(session.config.ide.master.is_some());
+        assert!(session.config.ide.slave.is_some());
+        assert!(
+            session.unmapped.0.iter().any(|note| note.contains("disk2.hdf")),
+            "the third image is named in the report: {:?}",
+            session.unmapped.0
+        );
+    }
+
+    /// The mapping is only worth anything if the core accepts it. Built with
+    /// the ROM optional, the way the bridge does when the launcher supplies
+    /// the Kickstart afterwards, and with mounts that do not exist on this
+    /// host: a machine must still come up, because the guest is what fails to
+    /// find a missing volume, not the constructor.
+    #[test]
+    fn the_core_accepts_a_mapped_collection() {
+        use copperline::audio::AudioSink;
+
+        struct Silent;
+        impl AudioSink for Silent {
+            fn push(&mut self, _left: f32, _right: f32) {}
+            fn flush(&mut self) {}
+        }
+
+        let root = scratch("build");
+        let session =
+            session_from(&UaeFile::parse(&collection_on_disk(&root))).expect("maps");
+        copperline::emulator::build_machine(&session.config, Box::new(Silent), false, true)
+            .expect("the core builds the machine this file describes");
     }
 
     #[test]
