@@ -220,6 +220,41 @@ fn model_for(file: &UaeFile) -> &'static str {
     }
 }
 
+/// Fill the machine's drive slots in a deliberate order, returning how many
+/// images found a home. Order matters: DH0 boots, and the built-in IDE is
+/// what a stock A600/A1200/A4000 boots from, so the first image goes there.
+fn place_images(config: &mut Config, images: &[ImageMount]) -> usize {
+    let mut placed = 0;
+    let mut take = |slot: &mut Option<DriveImage>| {
+        if let Some(image) = images.get(placed) {
+            *slot = Some(DriveImage {
+                path: image.path.clone(),
+                boot_pri: image.boot_pri,
+                ..DriveImage::default()
+            });
+            placed += 1;
+        }
+    };
+    take(&mut config.ide.master);
+    take(&mut config.ide.slave);
+    // The expansion controllers are real boards and each needs its own boot
+    // ROM: the core will not build a machine around a Zorro SCSI adapter
+    // without one. So they are only used when a ROM is configured, which no
+    // .uae file this app writes ever supplies today. Left in because the
+    // moment one does, thirteen drives become reachable instead of two.
+    if config.lide.rom.is_some() {
+        for unit in 0..config.lide.drives.len() {
+            take(&mut config.lide.drives[unit]);
+        }
+    }
+    if config.scsi.rom.is_some() {
+        for unit in 0..config.scsi.units.len() {
+            take(&mut config.scsi.units[unit]);
+        }
+    }
+    placed
+}
+
 pub fn session_from(file: &UaeFile) -> anyhow::Result<Session> {
     let model = model_for(file);
     let mut config = machine_profile_defaults(
@@ -314,21 +349,19 @@ pub fn session_from(file: &UaeFile) -> anyhow::Result<Session> {
         })
         .collect();
 
-    let mut slots: Vec<&mut Option<DriveImage>> =
-        vec![&mut config.ide.master, &mut config.ide.slave];
-    for (index, image) in images.iter().enumerate() {
-        let Some(slot) = slots.get_mut(index) else {
-            unmapped.0.push(format!(
-                "hardfile2 {} has no controller slot left (IDE holds two)",
-                image.path.display()
-            ));
-            continue;
-        };
-        **slot = Some(DriveImage {
-            path: image.path.clone(),
-            boot_pri: image.boot_pri,
-            ..DriveImage::default()
-        });
+    // A big set mounts far more than two drives - AGS runs to ten - and the
+    // writer knows it: past the second it asks for UAE's virtual controller,
+    // which has no limit. Copperline models real hardware and has no such
+    // thing, so the drives are spread across the controllers it does have:
+    // the built-in IDE first, then the Zorro IDE board, then SCSI. Thirteen
+    // units in all, which covers the sets this app knows about.
+    let placed = place_images(&mut config, &images);
+    for image in images.iter().skip(placed) {
+        unmapped.0.push(format!(
+            "{} is not mounted: the built-in IDE holds two drives, and a \
+Zorro IDE or SCSI board needs its own boot ROM before it can hold more",
+            image.path.display()
+        ));
     }
 
     for key in ["cachesize", "cpu_speed", "gfxcard_size", "whdload_filename"] {
@@ -423,6 +456,47 @@ ntsc=false
         assert!(session.config.ide.slave.is_none());
     }
 
+    /// A set the size of AGS: ten images. Only two can be mounted on a stock
+    /// machine, and the rest must be named rather than vanish.
+    #[test]
+    fn a_big_set_keeps_every_drive() {
+        let root = scratch("big_set");
+        let mut text = String::from("chipset=aga\ncpu_model=68020\n");
+        for unit in 0..10 {
+            let image = root.join(format!("DH{unit}.hdf"));
+            std::fs::write(&image, [0u8; 512]).unwrap();
+            text.push_str(&format!(
+                "hardfile2=rw,DH{unit}:\"{}\",32,1,2,512,0,,uae\n",
+                image.display()
+            ));
+        }
+        let session = session_from(&UaeFile::parse(&text)).expect("maps");
+        assert_eq!(session.images.len(), 10);
+        // Two fit; the other eight are named, because a set that silently
+        // loses most of its drives boots to a Workbench with nothing on it
+        // and no clue why.
+        assert_eq!(session.unmapped.0.len(), 8, "{:?}", session.unmapped.0);
+        let mounted = [session.config.ide.master.is_some(), session.config.ide.slave.is_some()]
+            .iter()
+            .filter(|present| **present)
+            .count()
+            + session.config.lide.drives.iter().filter(|d| d.is_some()).count()
+            + session.config.scsi.units.iter().filter(|d| d.is_some()).count();
+        assert_eq!(mounted, 2, "the built-in IDE is what a stock machine has");
+
+        // And the machine must actually build with those controllers on it:
+        // the Zorro IDE board and the SCSI adapter are real hardware here,
+        // not UAE's limitless virtual device, so this is where a missing
+        // board ROM would show up.
+        struct Silent;
+        impl copperline::audio::AudioSink for Silent {
+            fn push(&mut self, _left: f32, _right: f32) {}
+            fn flush(&mut self) {}
+        }
+        copperline::emulator::build_machine(&session.config, Box::new(Silent), false, true)
+            .expect("what could be mounted still builds a machine");
+    }
+
     #[test]
     fn a_third_image_is_reported_rather_than_dropped() {
         let root = scratch("three_images");
@@ -440,7 +514,7 @@ ntsc=false
         assert!(session.config.ide.slave.is_some());
         assert!(
             session.unmapped.0.iter().any(|note| note.contains("disk2.hdf")),
-            "the third image is named in the report: {:?}",
+            "the third image is named: {:?}",
             session.unmapped.0
         );
     }
