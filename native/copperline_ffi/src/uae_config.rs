@@ -178,10 +178,14 @@ fn take_path(rest: &str) -> (String, &str) {
 #[derive(Debug, Default)]
 pub struct Unmapped(pub Vec<String>);
 
-/// The machine the file describes.
+/// The machine the file describes. `dirs` and `images` are kept beside the
+/// config they were folded into: the host API reports them, and a test can
+/// check what was understood without unpicking a built machine.
 pub struct Session {
     pub config: Config,
+    #[allow(dead_code)]
     pub dirs: Vec<DirMount>,
+    #[allow(dead_code)]
     pub images: Vec<ImageMount>,
     pub unmapped: Unmapped,
 }

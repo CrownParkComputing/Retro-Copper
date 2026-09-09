@@ -11,6 +11,7 @@
 // never shared.
 mod helpers;
 
+mod host_api;
 mod uae_config;
 
 use std::cell::RefCell;
@@ -70,6 +71,105 @@ impl ClEmu {
     /// "PAL"/"NTSC" or empty for the profile's own. `floppy_drives` 0-4, or
     /// a negative value to keep the profile default. These ARE the Core
     /// tab's options - the same knobs the desktop launcher exposes.
+    /// Build from a configuration that is already complete - the shape the
+    /// host API needs, since it maps the app's own `.uae` file into one.
+    pub(crate) fn from_config(cfg: copperline::config::Config) -> anyhow::Result<ClEmu> {
+        let audio = Rc::new(RefCell::new(Vec::new()));
+        let sink = BufferSink { buf: audio.clone() };
+        let emu = build_machine(&cfg, Box::new(sink), false, true)?;
+        Ok(ClEmu {
+            emu,
+            audio,
+            fb: vec![0u32; MAX_CANVAS_PIXELS],
+            deinterlacer: Deinterlacer::with_settings(false, 0.0),
+            present: Vec::new(),
+            present_width: FB_WIDTH,
+            present_rows: 0,
+            last_rendered_frame: None,
+            anchor: None,
+            mouse_remainder: (0.0, 0.0),
+            mouse_pending: (0, 0),
+            presentation_latch: present_common::PresentationLatch::default(),
+            repeated_frame_detector: bitplane::RepeatedFrameDetector::default(),
+        })
+    }
+
+    pub(crate) fn present_width(&self) -> usize {
+        self.present_width
+    }
+
+    pub(crate) fn present_rows(&self) -> usize {
+        self.present_rows
+    }
+
+    pub(crate) fn present_pixels(&self) -> &[u32] {
+        &self.present
+    }
+
+    /// A raw Amiga keycode, which is what the app's on-screen keyboard and
+    /// its physical-keyboard mapping both already produce.
+    pub(crate) fn send_amiga_key(&mut self, rawkey: i32, pressed: bool) {
+        if (0..=0x7f).contains(&rawkey) {
+            self.emu.bus_mut().enqueue_key_event(rawkey as u8, pressed);
+        }
+    }
+
+    pub(crate) fn mouse_delta_counts(&mut self, dx: i32, dy: i32) {
+        self.mouse_pending.0 += dx;
+        self.mouse_pending.1 += dy;
+    }
+
+    pub(crate) fn mouse_button(&mut self, button: u8, pressed: bool) {
+        let input = &mut self.emu.bus_mut().input;
+        match button {
+            0 => input.set_mouse_button(0, 0, pressed),
+            1 => input.set_mouse_button(0, 2, pressed),
+            2 => input.set_mouse_button(0, 1, pressed),
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn set_joystick(
+        &mut self,
+        port: u8,
+        up: bool,
+        down: bool,
+        left: bool,
+        right: bool,
+        fire: bool,
+        button2: bool,
+    ) {
+        self.emu
+            .bus_mut()
+            .input
+            .set_joystick(port_index(port), up, down, left, right, fire, button2);
+    }
+
+    /// Insert by path: the host API hands over a filename, not bytes.
+    pub(crate) fn insert_floppy_path(&mut self, drive: u8, path: &str) -> anyhow::Result<()> {
+        let data = std::fs::read(path)?;
+        self.emu
+            .bus_mut()
+            .floppy
+            .insert_disk_image_bytes(drive as usize, data, PathBuf::from(path), true)?;
+        Ok(())
+    }
+
+    pub(crate) fn eject_floppy(&mut self, drive: u8) {
+        if let Err(err) = self.emu.bus_mut().floppy.eject_disk_image(drive as usize) {
+            eprintln!("copperline_ffi: eject_floppy: {err:#}");
+        }
+    }
+
+    /// How many drives the machine has, which is what the app's disk-swap UI
+    /// asks before offering a drive.
+    pub(crate) fn floppy_count(&self) -> usize {
+        (0..4)
+            .filter(|drive| self.emu.bus().floppy.drive_connected(*drive))
+            .count()
+    }
+
     fn new(model: &str, video: &str, floppy_drives: i32) -> anyhow::Result<ClEmu> {
         let mut cfg = if model.trim().is_empty() {
             Config::default()
