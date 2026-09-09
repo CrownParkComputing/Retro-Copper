@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../emulator.dart';
+import '../ffi/amiga_core.dart';
 import '../theme/amiga_theme.dart';
 import '../widgets/amiga_logo.dart';
 import 'getting_started.dart';
@@ -8,6 +9,25 @@ import 'logs_panel.dart';
 
 /// What this is, and what is running underneath it -- with the logs behind
 /// a second tab, because "what went wrong" belongs next to "what is this".
+/// The core actually loaded, asked at runtime rather than assumed. Both cores
+/// answer the same interface on purpose, so this is the only honest way to
+/// say which one is behind the app.
+String _coreName() => AmigaCore.open()?.coreName ?? 'Amiberry';
+
+bool _coreIsCopperline() => _coreName().toLowerCase().startsWith('copperline');
+
+String _coreDescription() {
+  if (_coreIsCopperline()) {
+    return '${_coreName()}, a cycle-driven Amiga implementation written in '
+        'Rust. It is built as a library for each platform and drives the '
+        'chipset from the same clock the hardware did.';
+  }
+  return 'Amiberry, which is WinUAE\'s core with a Linux and handheld front '
+      'end. It is vendored and built for each platform in turn, because they '
+      'do not agree on much: iOS cannot JIT at all, so that build compiles '
+      'the JIT out entirely rather than switching it off at runtime.';
+}
+
 class AboutPanel extends StatelessWidget {
   const AboutPanel({super.key});
 
@@ -105,22 +125,40 @@ class _AboutBody extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 22),
-        const _Section(
+        _Section(
           title: 'The emulator',
+          body: _coreDescription(),
+        ),
+        if (_coreIsCopperline()) const _Section(
+          title: 'How Copperline differs',
           body:
-              'Amiberry, which is WinUAE\'s core with a Linux and handheld '
-              'front end. It is vendored and built for each platform in turn, '
-              'because they do not agree on much: iOS cannot JIT at all, so '
-              'that build compiles the JIT out entirely rather than switching '
-              'it off at runtime.',
+              'Amiberry descends from UAE, twenty-five years of C that grew a '
+              'chipset as it went. Copperline is a fresh Rust implementation '
+              'driven by the cycle, so the Copper, Blitter and Paula are timed '
+              'against the same clock the real machine used rather than caught '
+              'up with at the end of a scanline. What that buys is the things '
+              'demos do on purpose and games do by accident: a colour changed '
+              'mid-line lands where it was asked for, and a Blitter finishing '
+              'inside the frame it was started in behaves like the hardware.\n\n'
+              'It also carries what UAE bolted on later as first-class parts: '
+              'real IDE and SCSI controllers rather than a virtual hard-drive '
+              'device that bypasses the guest\'s own drivers, an RDB read from '
+              'the image the way a real Amiga reads it, and directory mounts '
+              'served live from a folder.\n\n'
+              'Not everything has crossed over yet. Sound is silent, save '
+              'states are not wired up, and JIT does not exist here at all - '
+              'Copperline is fast enough without one on this hardware, but a '
+              '68040 workload that leaned on Amiberry\'s JIT will feel it. '
+              'Anything the machine configuration asks for that has no '
+              'counterpart is reported in the log rather than quietly ignored.',
         ),
         const _Section(
           title: 'The front end',
           body:
               'Flutter, everywhere - Android, iOS, macOS, Linux and Windows '
               'from one codebase. The emulator draws its own screen natively; '
-              'nothing is copied through Dart, so the picture costs the same '
-              'as it does in Amiberry proper.',
+              'nothing is copied through Dart, so the picture costs what it '
+              'does in a desktop emulator.',
         ),
         const _Section(
           title: 'What you need to supply',
@@ -142,11 +180,15 @@ class _AboutBody extends StatelessWidget {
               'aros.sourceforge.io. WHDLoad, JST and AmiQuit are Bert Jahn\'s '
               'and ship under their own terms.',
         ),
-        const _Section(
+        _Section(
           title: 'Thanks',
-          body:
-              'Amiberry, WinUAE, and the people who wrote the demos that '
-              'made anyone want a machine like this in the first place.',
+          body: _coreIsCopperline()
+              ? 'Copperline, whose core this runs on; Amiberry and WinUAE, '
+                  'which carried the Amiga this far; and the people who wrote '
+                  'the demos that made anyone want a machine like this in the '
+                  'first place.'
+              : 'Amiberry, WinUAE, and the people who wrote the demos that '
+                  'made anyone want a machine like this in the first place.',
         ),
       ],
     );

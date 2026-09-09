@@ -338,6 +338,23 @@ class AmigaCore {
 
   void sendKey(int amigaKeycode, bool pressed) =>
       _sendKey(amigaKeycode, pressed);
+  /// Which emulator core this build actually loaded.
+  ///
+  /// Both cores answer the same interface, deliberately, so the app cannot
+  /// otherwise tell them apart. Only the Copperline bridge exports a name;
+  /// Amiberry's host library has no such symbol, and a failed lookup is the
+  /// answer rather than an error.
+  late final String coreName = () {
+    try {
+      final name = _lib.lookupFunction<
+          Pointer<Utf8> Function(),
+          Pointer<Utf8> Function()>('uae4arm_host_core_name')();
+      return name == nullptr ? 'Amiberry' : name.toDartString();
+    } on ArgumentError {
+      return 'Amiberry';
+    }
+  }();
+
   late final void Function(int) _padAttach = _lib
       .lookupFunction<Void Function(Int32), void Function(int)>(
         'uae4arm_host_pad_attach',

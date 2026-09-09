@@ -19,7 +19,8 @@
 // iOS) and every call for the machine comes from it, except the handful the
 // UI thread uses to read a frame or push input, which take the lock briefly.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
+use std::sync::OnceLock;
 use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -417,6 +418,24 @@ pub extern "C" fn uae4arm_host_set_logfile_enabled(enabled: bool) {
 pub extern "C" fn uae4arm_host_logfile_path() -> *const c_char {
     static EMPTY: &[u8] = b"\0";
     EMPTY.as_ptr() as *const c_char
+}
+
+/// Which core answered. Amiberry's host library has no such export, so the
+/// app looks this up and treats a miss as "Amiberry": the two builds are
+/// otherwise indistinguishable through this interface, which is the point,
+/// and an About screen that names the wrong emulator is the kind of small
+/// untruth that turns into a store rejection.
+#[no_mangle]
+pub extern "C" fn uae4arm_host_core_name() -> *const c_char {
+    static NAME: OnceLock<CString> = OnceLock::new();
+    NAME.get_or_init(|| {
+        CString::new(format!("Copperline {}", copperline_version())).unwrap()
+    })
+    .as_ptr()
+}
+
+fn copperline_version() -> &'static str {
+    option_env!("COPPERLINE_VERSION").unwrap_or("0.17")
 }
 
 /// The title the app gave the session. Printed when the machine comes up so
