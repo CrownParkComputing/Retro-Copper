@@ -1,0 +1,15 @@
+diff --git a/src/blockdev/mod.rs b/src/blockdev/mod.rs
+index 11b49055..2ef17dc7 100644
+--- a/src/blockdev/mod.rs
++++ b/src/blockdev/mod.rs
+@@ -53,7 +53,9 @@
+ #[cfg(target_os = "macos")]
+ #[path = "macos.rs"]
+ mod platform;
+-#[cfg(target_os = "linux")]
++// Android is Linux: sysfs enumeration and the same ioctls, so the Linux
++// backend serves it rather than the module going missing on a phone.
++#[cfg(any(target_os = "linux", target_os = "android"))]
+ #[path = "linux.rs"]
+ mod platform;
+ #[cfg(target_os = "windows")]

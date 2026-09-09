@@ -11,6 +11,10 @@ publish = false
 [workspace]
 
 [lib]
+# Named for the interface it answers, not the core behind it: the app
+# dlopens "libuae4arm.so" and "libuae4arm.framework/libuae4arm", and
+# swapping which core replies is the whole point of this crate.
+name = "uae4arm"
 crate-type = ["cdylib"]
 
 [dependencies]
