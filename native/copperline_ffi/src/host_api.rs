@@ -434,8 +434,10 @@ pub extern "C" fn uae4arm_host_core_name() -> *const c_char {
     .as_ptr()
 }
 
+/// Set by build.rs from copperline's own Cargo.toml, so it cannot drift from
+/// the submodule the app is actually built against.
 fn copperline_version() -> &'static str {
-    option_env!("COPPERLINE_VERSION").unwrap_or("0.17")
+    env!("COPPERLINE_VERSION")
 }
 
 /// The title the app gave the session. Printed when the machine comes up so
