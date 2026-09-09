@@ -2,7 +2,7 @@
 """Builds the launcher icon and every size Android and iOS ask for.
 
 The icon is the three things the app is: the Retro script lifted straight from
-the Retro Recompilation logo, AMIGA in the wordmark's chrome blue, and the boot
+the Retro Recompilation logo, COPPER in the wordmark's chrome blue, and the
 tick. The tick is redrawn here from the same points and colour bands as
 lib/widgets/amiga_logo.dart rather than traced from a bitmap, so the icon and
 the tick the app draws on screen cannot drift apart.
@@ -169,24 +169,68 @@ def tick(height):
     return stamped.resize((width, height), Image.LANCZOS)
 
 
+def copper_bars(height):
+    """The Copper's colour bars: the effect the chip is famous for.
+
+    The Copper changes the background colour between scanlines, so a band of
+    solid colour appears with a bright line through its middle where the
+    steps are closest together. Six of them, in the same rainbow the boot tick
+    used, so the icon still reads as part of the family - but nothing about it
+    is an Amiga tick any more.
+    """
+    width = round(height * 1.45)
+    scale = 4
+    layer = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+
+    count = len(TICK_BANDS)
+    gap = height * scale * 0.055
+    bar = (height * scale - gap * (count - 1)) / count
+    radius = bar / 2
+
+    for index, colour in enumerate(TICK_BANDS):
+        top = index * (bar + gap)
+        # Each bar carries its own vertical ramp: dark at the edges, the
+        # colour itself through the middle. That highlight is the whole look.
+        strip = vertical_gradient(
+            (width * scale, round(bar)),
+            [tuple(c // 4 for c in colour), colour,
+             tuple(min(255, c + (255 - c) * 3 // 5) for c in colour),
+             colour, tuple(c // 4 for c in colour)],
+        ).convert("RGBA")
+        mask = Image.new("L", (width * scale, round(bar)), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, width * scale - 1, round(bar) - 1), radius=radius, fill=255
+        )
+        strip.putalpha(mask)
+        layer.alpha_composite(strip, (0, round(top)))
+
+    # The same dark rim the tick had, so the mark keeps its edge on the glow.
+    rim = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    rim.paste(TICK_OUTLINE + (255,), (0, 0),
+              layer.split()[3].filter(ImageFilter.MaxFilter(9)))
+    stamped = Image.alpha_composite(rim, layer)
+    return stamped.resize((width, height), Image.LANCZOS)
+
+
 def artwork(width):
     """The three pieces stacked, on transparent, [width] across."""
     layer = Image.new("RGBA", (width, width), (0, 0, 0, 0))
 
     script = retro_script(round(width * 0.80))
-    amiga = chrome_text("AMIGA", round(width * 0.68), round(width * 0.19))
-    mark = tick(round(width * 0.46))
+    name = chrome_text("COPPER", round(width * 0.68), round(width * 0.19))
+    mark = copper_bars(round(width * 0.46))
 
     # Centred as a block rather than pinned to the top, so the icon does not
     # sit high in its own square.
-    stack = script.height + amiga.height + mark.height + round(width * 0.05)
+    stack = script.height + name.height + mark.height + round(width * 0.05)
     top = max(0, (width - stack) // 2)
     layer.alpha_composite(script, ((width - script.width) // 2, top))
 
     top += script.height + round(width * 0.015)
-    layer.alpha_composite(amiga, ((width - amiga.width) // 2, top))
+    layer.alpha_composite(name, ((width - name.width) // 2, top))
 
-    top += amiga.height + round(width * 0.035)
+    top += name.height + round(width * 0.035)
     layer.alpha_composite(mark, ((width - mark.width) // 2, top))
     return layer
 
@@ -246,6 +290,12 @@ def main():
             os.path.join(folder, "ic_launcher_foreground.png")
         )
 
+    # The iOS build of this repository is destined for the App Store listing
+    # still called Retro-Amiga, so its asset catalogue keeps the Amiga icon.
+    # Set COPPER_IOS_ICON=1 when that changes.
+    if not os.environ.get("COPPER_IOS_ICON"):
+        print("icons written (iOS catalogue left as Retro-Amiga)")
+        return
     ios = os.path.join(HERE, "ios", "Runner", "Assets.xcassets", "AppIcon.appiconset")
     sizes = {
         "Icon-App-20x20@1x.png": 20,

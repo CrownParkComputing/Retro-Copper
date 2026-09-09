@@ -109,7 +109,9 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.uae4arm2026"
+        // Its own package: Retro-Amiga is published as com.uae4arm2026 and this
+        // is a different emulator, so the two must install side by side.
+        applicationId = "com.uae4arm2026.copper"
         // 28, which is this app's real floor rather than a preference.
         // Amiberry calls posix_spawn (src/osdep/amiberry_update.cpp), and
         // Bionic did not have it until API 28 -- a build at 26 fails outright
